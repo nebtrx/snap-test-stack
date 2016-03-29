@@ -82,7 +82,7 @@ routes = [ ("/login",       with auth handleLoginSubmit)
          , ("/new_user",    with auth handleNewUser)
          , ("/",            index)
          , ("/echo/:word",  echo)
-         , ("",          serveDirectory "static")
+         , ("",             serveDirectory "static")
          ]
 
 
