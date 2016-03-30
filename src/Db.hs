@@ -1,8 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ViewPatterns      #-}
 
 module Db where
 
 import           Control.Applicative
+import           Data.ByteString       (ByteString)
 import           Data.Maybe
 import           Data.Text             (Text)
 import qualified Data.Text             as T
@@ -34,6 +36,7 @@ data Game = Game
   { gameID     :: Maybe Integer
   , player1    :: Player
   , player2    :: Player
+  , winner     :: Player
   , timePlayed :: UTCTime
   , videoUrl   :: ByteString
   } deriving (Eq, Show, Read)
@@ -47,7 +50,7 @@ rowToPost (id:title:body:slug:timeposted:_) =
        , timePosted = fromSql timeposted
        }
 
-rowToPlayer :: [SqlValue] -> Post
+rowToPlayer :: [SqlValue] -> Player
 rowToPlayer (id:name:race:rating:_) =
   Player  { playerID = Just $ fromSql id
           , name = fromSql name
@@ -56,14 +59,18 @@ rowToPlayer (id:name:race:rating:_) =
           }
 
 
-rowToGame :: [SqlValue] -> Post
-rowToGame (id:name:race:rating:_) =
-  Player  { playerID = Just $ fromSql id
-          , name = fromSql name
-          , race = toEnum (fromSql race :: Int)
-          , rating = fromSql rating
-          }
-
+rowToGame :: [SqlValue] -> Game
+rowToGame row = let
+  (rowToPlayer -> p1, row') = splitAt 4 row
+  (rowToPlayer -> p2, row'') = splitAt 4 row'
+  (id:_:_:outcome:time:url:_) = row
+    in Game { gameID = Just $ fromSql id
+            , player1 = p1
+            , player2 = p2
+            , winner = if fromSql outcome == (1::Int) then p1 else p2
+            , timePlayed = fromSql time
+            , videoUrl = fromSql url
+            }
 
 allPosts :: Connection -> IO [Post]
 allPosts conn = do
@@ -72,14 +79,15 @@ allPosts conn = do
   fmap rowToPost <$> quickQuery' conn query []
 
 playerByName :: Connection -> Text -> IO (Maybe Player)
-playerByName conn = do
+playerByName conn name = do
   let query = "Select id, name, race, rating" `mappend`
               "FROM player WHERE lower(player.name)=?"
   listToMaybe . fmap rowToPlayer <$> quickQuery' conn query [toSql . T.toLower $ name]
 
 allPlayers :: Connection -> IO [Player]
 allPlayers conn = do
-  let query = "Select id, name, race, rating FROM player"
+  let query = "Select id, name, race, rating FROM player" `mappend`
+              "ORDER BY rating DESC"
   fmap rowToPlayer <$> quickQuery' conn query []
 
 
@@ -94,7 +102,25 @@ putPlayer conn player = do
   commit conn
   return ()
 
---
--- games :: Connection -> IO [Game]
--- game :: Connection -> Integer -> IO (Maybe Game)
--- gamesByPlayer :: Connection -> Player -> IO [Game]
+
+games :: Connection -> IO [Game]
+games conn = do
+  let query = "SELECT * FROM player as player1, player as player2, game" `mappend`
+              "WHERE game.player1 = player1.id and game.player2 = player2.id"
+  fmap rowToGame <$> quickQuery' conn query []
+
+game :: Connection -> Integer -> IO (Maybe Game)
+game conn gameID = do
+  let query = "SELECT * FROM player as player1, player as player2, game" `mappend`
+              "WHERE game.player1 = player1.id and game.player2 = player2.id" `mappend`
+              "AND game.id=?"
+  listToMaybe . fmap rowToGame <$> quickQuery' conn query [toSql gameID]
+
+gamesByPlayer :: Connection -> Player -> IO [Game]
+gamesByPlayer conn player = do
+  let query = "SELECT * FROM player as player1, player as player2, game" ++
+              "WHERE game.player1 = player1.id and game.player2 = player2.id" ++
+              "AND (player1.id=? or player2.id=?)"
+  case playerID player of
+        Nothing -> return []
+        (Just theid) -> map rowToGame <$> quickQuery' conn query [toSql theid, toSql theid]
